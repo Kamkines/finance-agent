@@ -1,0 +1,6 @@
+services:
+  # Telegram Bot
+  bot:
+    build: ./bot
+    env_file: .env
+    restart: always
