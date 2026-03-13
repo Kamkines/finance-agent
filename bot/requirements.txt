@@ -2,3 +2,4 @@ aiogram==3.26.0
 openai-agents==0.10.2
 pydantic-settings==2.6.0
 python-dotenv==1.0.1
+tavily-python==0.7.22
