@@ -1,24 +1,26 @@
+from datetime import datetime
+
 from agents import (
     Agent,
-    Runner,
-    function_tool,
-    set_default_openai_client,
-    set_default_openai_api,
     InputGuardrail,
+    InputGuardrailTripwireTriggered,
     GuardrailFunctionOutput,
+    Runner,
     RunContextWrapper,
+    function_tool,
+    set_default_openai_api,
+    set_default_openai_client,
     set_tracing_disabled,
 )
 from agents.memory import SQLiteSession
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict
 from pydantic_settings import BaseSettings
-from tavily import TavilyClient
+from tavily import AsyncTavilyClient
 
 
 class Settings(BaseSettings):
     model_config = ConfigDict(env_file=".env")
-    telegram_bot_token: str
     azure_openai_api_key: str
     azure_openai_endpoint: str
     azure_openai_deployment: str
@@ -35,7 +37,7 @@ set_default_openai_client(client)
 set_default_openai_api("chat_completions")
 set_tracing_disabled(True)
 
-tavily = TavilyClient(api_key=settings.tavily_api_key)
+tavily = AsyncTavilyClient(api_key=settings.tavily_api_key)
 
 class FinanceCheck(BaseModel):
     is_finance_related: bool
@@ -62,13 +64,12 @@ async def finance_guardrail(
 @function_tool
 def get_current_date() -> str:
     """Возвращает текущую дату"""
-    from datetime import datetime
     return datetime.now().strftime("%d.%m.%Y")
 
 @function_tool
-def search_web(query: str) -> str:
+async def search_web(query: str) -> str:
     """Ищет актуальную финансовую информацию в интернете"""
-    response = tavily.search(query=query, max_results=5)
+    response = await tavily.search(query=query, max_results=5)
     results = []
     for r in response.get("results", []):
         results.append(f"- {r['title']}: {r['content'][:300]}")
@@ -92,19 +93,31 @@ finance_agent = Agent(
 Всегда используй get_current_date чтобы знать актуальную дату.
 Отвечай на русском языке. Будь конкретным.""",
     tools=[search_web, get_current_date],
-    input_guardrails=[InputGuardrail(guardrail_function=finance_guardrail)],
+    input_guardrails=[InputGuardrail(guardrail_function=finance_guardrail, run_in_parallel=False)],
 )
 
-async def analyze(user_message: str, user_id: int) -> str:
-    try:
-        session = SQLiteSession(
-            session_id=str(user_id),
-            db_path="/app/sessions.db"
-        )
+_NOT_FINANCE_MSG = (
+    "❌ Я финансовый аналитик и могу помочь только с анализом акций, "
+    "облигаций и инвестиций. Попробуй спросить про конкретную акцию или облигацию 😊"
+)
 
+_DB_PATH = "/app/sessions.db"
+
+
+def _get_session(user_id: int) -> SQLiteSession:
+    return SQLiteSession(session_id=str(user_id), db_path=_DB_PATH)
+
+
+async def analyze(user_message: str, user_id: int) -> str:
+    session = _get_session(user_id)
+    try:
         result = await Runner.run(finance_agent, user_message, session=session)
         return result.final_output
-    except Exception as e:
-        if "tripwire" in str(e).lower():
-            return "❌ Я финансовый аналитик и могу помочь только с анализом акций, облигаций и инвестиций. Попробуй спросить про конкретную акцию или облигацию 😊"
-        raise e
+    except InputGuardrailTripwireTriggered:
+        return _NOT_FINANCE_MSG
+
+
+async def reset_session(user_id: int) -> None:
+    await _get_session(user_id).clear_session()
+
+

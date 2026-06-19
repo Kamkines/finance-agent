@@ -1,6 +1,10 @@
 services:
-  # Telegram Bot
   bot:
     build: ./bot
     env_file: .env
     restart: always
+    volumes:
+      - sessions_data:/app
+
+volumes:
+  sessions_data:

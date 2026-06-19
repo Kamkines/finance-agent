@@ -1,10 +1,13 @@
 import asyncio
 import logging
+
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
+
+from agent import analyze, reset_session
 
 
 class Settings(BaseSettings):
@@ -14,7 +17,10 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 
 bot = Bot(token=settings.telegram_bot_token)
 dp = Dispatcher()
@@ -29,54 +35,35 @@ async def start(message: Message):
         "• _Проанализируй акцию Сбербанка_\n"
         "• _Стоит ли покупать ОФЗ 26238?_\n"
         "• _Что думаешь про Apple?_",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
     )
+
+
+MAX_MSG_LEN = 4096
+
+
+async def send_long_message(message: Message, text: str) -> None:
+    for i in range(0, len(text), MAX_MSG_LEN):
+        await message.answer(text[i : i + MAX_MSG_LEN], parse_mode="Markdown")
+
+
+@dp.message(Command("reset"))
+async def cmd_reset(message: Message):
+    await reset_session(message.from_user.id)
+    await message.answer("🔄 История диалога очищена. Начнём заново!")
 
 
 @dp.message(F.text)
 async def handle_message(message: Message):
     thinking = await message.answer("🔍 Анализирую, подожди...")
-
     try:
-        from agent import analyze
         response = await analyze(message.text, message.from_user.id)
         await thinking.delete()
-        await message.answer(response, parse_mode="Markdown")
+        await send_long_message(message, response)
     except Exception as e:
         await thinking.delete()
-        logging.error(f"Ошибка: {e}")
+        logging.error("Ошибка при обработке сообщения: %s", e)
         await message.answer("❌ Что-то пошло не так, попробуй ещё раз")
-
-
-# @dp.message(F.text)
-# async def handle_message(message: Message):
-#     thinking = await message.answer("🔍 Анализирую, подожди...")
-#     try:
-#         from agent import analyze_stream
-#         stream = await analyze_stream(message.text)
-#         if stream is None:
-#             await thinking.delete()
-#             await message.answer("❌ Я финансовый аналитик и могу помочь только с анализом акций, облигаций и инвестиций.")
-#             return
-#         await thinking.delete()
-#         sent = await message.answer("...")
-#         current_text = ""
-#         async for event in stream.stream_events():
-#             if event.type == "raw_response_event":
-#                 delta = getattr(event.data, "delta", None)
-#                 if delta:
-#                     current_text += delta
-#                     if len(current_text) % 100 < 5:
-#                         try:
-#                             await sent.edit_text(current_text)
-#                         except Exception:
-#                             pass
-#         if current_text:
-#             await sent.edit_text(current_text, parse_mode="Markdown")
-#     except Exception as e:
-#         await thinking.delete()
-#         logging.error(f"Ошибка: {e}")
-#         await message.answer("❌ Что-то пошло не так, попробуй ещё раз")
 
 
 async def main():
